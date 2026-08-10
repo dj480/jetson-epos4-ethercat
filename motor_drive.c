@@ -26,6 +26,8 @@ int main(void)
 
     char cmd;
     int32_t move_counts;
+    
+    uint32_t profile_velocity = 5000;
 
     printf("Starting EtherCAT...\n");
 
@@ -72,6 +74,19 @@ int main(void)
         EC_TIMEOUTRXM);
 
     printf("Mode Display = %d\n", mode_display);
+
+
+    ecx_SDOwrite(
+	 &ctx,
+	 1,
+	 0x6081,
+	 0x00,
+	 FALSE,
+	 sizeof(profile_velocity),
+	 &profile_velocity,
+	 EC_TIMEOUTRXM);
+    printf("Profile Velocity = %u\n", profile_velocity);
+
 
     ecx_SDOread(
         &ctx,
@@ -126,11 +141,12 @@ int main(void)
     while (1)
     {
         printf("\nCommands:\n");
-        printf("  p            Print position\n");
-        printf("  m <counts>   Move relative\n");
-        printf("  e            Enable drive\n");
-        printf("  d            Disable drive\n");
-        printf("  q            Quit\n");
+	printf("  p            Print position\n");
+	printf("  m <counts>   Move relative\n");
+	printf("  v <speed>    Set velocity\n");
+	printf("  e            Enable drive\n");
+	printf("  d            Disable drive\n");
+	printf("  q            Quit\n");
         printf("> ");
 
         scanf(" %c", &cmd);
@@ -151,6 +167,23 @@ int main(void)
 
             printf("Position = %d\n", actualpos);
         }
+
+	else if (cmd == 'v')
+	{
+		scanf("%u", &profile_velocity);
+		
+		ecx_SDOwrite(
+			&ctx,
+			1,
+			0x6081,
+			0x00,
+			FALSE,
+			sizeof(profile_velocity),
+			&profile_velocity,
+			EC_TIMEOUTRXM);
+		printf("Profile Velocity = %u\n",
+			profile_velocity);
+	}
 
         else if (cmd == 'e')
         {

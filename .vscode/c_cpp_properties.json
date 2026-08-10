@@ -1,0 +1,18 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/home/danielbetts/SOEM/include",
+                "/home/danielbetts/SOEM/build/include",
+                "/home/danielbetts/SOEM/osal",
+                "/home/danielbetts/SOEM/osal/linux",
+                "/home/danielbetts/SOEM/oshw/linux"
+            ],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c11"
+        }
+    ],
+    "version": 4
+}
