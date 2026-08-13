@@ -258,7 +258,7 @@ int motor_move_relative(int32_t move_counts)
 
     ecx_SDOwrite(&ctx, 1, 0x6040, 0x00, FALSE, sizeof(ctrlwrd), &ctrlwrd, EC_TIMEOUTRXM);
 
-    osal_usleep(100000);
+    osal_usleep(10000);
 
  
 
@@ -266,7 +266,7 @@ int motor_move_relative(int32_t move_counts)
 
     ecx_SDOwrite(&ctx, 1, 0x6040, 0x00, FALSE, sizeof(ctrlwrd), &ctrlwrd, EC_TIMEOUTRXM);
 
-    osal_usleep(100000);
+    osal_usleep(10000);
 
  
 
@@ -274,7 +274,7 @@ int motor_move_relative(int32_t move_counts)
 
     ecx_SDOwrite(&ctx, 1, 0x6040, 0x00, FALSE, sizeof(ctrlwrd), &ctrlwrd, EC_TIMEOUTRXM);
 
-    osal_usleep(100000);
+    osal_usleep(10000);
 
  
 
@@ -282,7 +282,8 @@ int motor_move_relative(int32_t move_counts)
 
  
 
-    osal_usleep(2000000);
+    /* short sleep to yield, avoid long blocking that causes pulsed motion */
+    osal_usleep(10000);
 
  
 
@@ -302,8 +303,47 @@ void motor_close(void)
 
 {
 
-    motor_disable();
-
     ecx_close(&ctx);
 
+}
+
+/* Continuous velocity thread implementation */
+/* Continuous velocity thread implementation */
+static pthread_t _vel_thread;
+static volatile int _vel_running = 0;
+static int32_t _vel_step = 0;
+static uint32_t _vel_interval_ms = 5;
+
+static void *_vel_loop(void *arg)
+{
+    (void)arg;
+    while (_vel_running) {
+        motor_move_relative(_vel_step);
+        if (_vel_interval_ms)
+            osal_usleep(_vel_interval_ms * 1000);
+    }
+    return NULL;
+}
+
+int motor_start_continuous(int32_t step_counts, uint32_t interval_ms)
+{
+    if (_vel_running)
+        return 0; /* already running */
+    _vel_step = step_counts;
+    _vel_interval_ms = interval_ms ? interval_ms : 20;
+    _vel_running = 1;
+    if (pthread_create(&_vel_thread, NULL, _vel_loop, NULL) != 0) {
+        _vel_running = 0;
+        return -1;
+    }
+    return 1;
+}
+
+int motor_stop_continuous(void)
+{
+    if (!_vel_running)
+        return 0;
+    _vel_running = 0;
+    pthread_join(_vel_thread, NULL);
+    return 1;
 }

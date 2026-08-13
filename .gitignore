@@ -1,3 +1,8 @@
 motor_drive
 read_status2
 *.o
+.venv/
+venv/
+env/
+jetson_env/
+.venv/bin/
