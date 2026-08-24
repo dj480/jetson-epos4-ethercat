@@ -8,6 +8,7 @@ import time
 from enum import Enum, auto
 
 try:
+    # MediaPipe is optional because OpenCV can provide the fallback detector.
     import mediapipe as mp
     HAS_MEDIAPIPE_TASKS = hasattr(mp, "tasks") and hasattr(mp.tasks, "vision")
     if HAS_MEDIAPIPE_TASKS:
@@ -41,6 +42,15 @@ except Exception as exc:
 
 
 class PinchState(Enum):
+    """Events emitted during the pinch gesture lifecycle.
+
+    ``PINCH_DOWN`` is emitted once when the measured fingertip distance
+    crosses the close threshold. ``PINCH_HOLD`` is emitted for each detected
+    frame while the fingers remain closed, and ``PINCH_UP`` is emitted once
+    when the distance crosses the open threshold. The separate thresholds
+    provide hysteresis, preventing small camera fluctuations from rapidly
+    toggling the gesture state.
+    """
     OPEN = auto()
     PINCH_DOWN = auto()
     PINCH_HOLD = auto()
@@ -48,7 +58,20 @@ class PinchState(Enum):
 
 
 class JetsonHandTracker:
-    """Headless pinch tracker optimized for Jetson with MediaPipe support."""
+    """Capture frames and publish normalized pinch events.
+
+    OpenCV owns camera capture and supplies BGR ``numpy`` arrays. The primary
+    detector converts each frame to the RGB format required by MediaPipe and
+    measures the distance between landmark 4 (thumb tip) and landmark 8
+    (index-finger tip). When the task API or model file is unavailable, the
+    OpenCV fallback finds a skin-colored contour and uses two upper hull
+    points as an approximation of those fingertips.
+
+    Detection runs on a daemon thread. Consumers can either poll
+    ``event_queue`` with ``get_event`` or receive the same four-value event
+    tuple through ``on_pinch_event``. Coordinates are normalized to the frame
+    dimensions, so ``x`` and ``y`` normally range from 0.0 to 1.0.
+    """
 
     def __init__(
         self,
@@ -74,7 +97,9 @@ class JetsonHandTracker:
         self.enable_preview = bool(enable_preview)
         self.min_contour_area = min_contour_area
 
-        # Default model path lives in project models/
+        # Resolve the model from the repository rather than the process's
+        # current directory. This keeps the service usable when launched by
+        # a system service or by a command issued from another directory.
         if model_path is None:
             project_root = os.path.dirname(os.path.dirname(__file__))
             model_path = os.path.join(project_root, "models", "hand_landmarker.task")
@@ -89,7 +114,9 @@ class JetsonHandTracker:
         self.latest_frame = None
         self.is_currently_pinching = False
         self.hand_landmarker = None
-        # Handedness smoothing state
+        # Hand labels can flicker between frames. These fields implement a
+        # small hysteresis filter: a new side must be reported consistently
+        # for _hand_min_streak frames before replacing the current side.
         self._hand_last = None
         self._hand_candidate = None
         self._hand_candidate_streak = 0
@@ -106,6 +133,7 @@ class JetsonHandTracker:
             self.use_opencv_fallback = bool(use_fallback)
 
     def start(self):
+        # Camera acquisition runs in a daemon thread so callers stay responsive.
         if self.running:
             return
         self.running = True
@@ -113,6 +141,7 @@ class JetsonHandTracker:
         self.thread.start()
 
     def stop(self):
+        # Signal the loop, wait briefly for it, and release detector resources.
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
@@ -137,6 +166,10 @@ class JetsonHandTracker:
             return None
 
     def _dispatch_event(self, state, norm_x, norm_y, hand_side=None):
+        # Publish through both supported integration styles. The queue is
+        # bounded because PINCH_HOLD arrives once per frame; dropping a stale
+        # hold is preferable to blocking the camera thread when a consumer is
+        # temporarily slower than capture.
         event_data = (state, norm_x, norm_y, hand_side)
         if not self.event_queue.full():
             self.event_queue.put(event_data)
@@ -147,6 +180,10 @@ class JetsonHandTracker:
                 print(f"[JetsonHandTracker] Callback error: {e}")
 
     def _create_skin_mask(self, frame):
+        # Skin color is not represented consistently in one color space under
+        # changing Jetson camera lighting. Combining YCrCb and HSV masks makes
+        # the fallback more tolerant, while blur and morphology remove small
+        # holes and isolated pixels before contour extraction.
         ycrcb = cv2.cvtColor(frame, cv2.COLOR_BGR2YCrCb)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -161,6 +198,9 @@ class JetsonHandTracker:
         return mask
 
     def _create_hand_landmarker(self):
+        # Construct MediaPipe lazily. This avoids loading the task model for
+        # fallback-only deployments and makes importing this module possible
+        # on systems where MediaPipe is not installed.
         if self.hand_landmarker is not None:
             return
         if not HAS_MEDIAPIPE_TASKS or not self.model_path or not os.path.isfile(self.model_path):
@@ -177,12 +217,16 @@ class JetsonHandTracker:
         self.hand_landmarker = HandLandmarker.create_from_options(options)
 
     def _find_pinch(self, frame):
+        # Both detectors return the same small dictionary so the state machine
+        # below does not need to know which vision library produced the data.
         if self.use_opencv_fallback:
             return self._opencv_pinch_detection(frame)
 
         self._create_hand_landmarker()
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = MpImage(ImageFormat.SRGB, rgb_frame)
+        # VIDEO mode requires timestamps in milliseconds so MediaPipe can
+        # associate this frame with the previous one during tracking.
         timestamp_ms = int(time.time() * 1000)
         results = self.hand_landmarker.detect_for_video(mp_image, timestamp_ms)
         if not results.hand_landmarks:
@@ -229,6 +273,10 @@ class JetsonHandTracker:
         }
 
     def _opencv_pinch_detection(self, frame):
+        # The fallback has no semantic landmarks. It approximates thumb and
+        # index tips by choosing the closest pair of convex-hull points above
+        # the contour centroid, which is less reliable than MediaPipe with
+        # clutter or changing lighting.
         mask = self._create_skin_mask(frame)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
@@ -290,6 +338,9 @@ class JetsonHandTracker:
         return (moments["m10"] / moments["m00"], moments["m01"] / moments["m00"])
 
     def _update_loop(self):
+        # Keep the capture buffer short so decisions use recent frames. A
+        # large buffer would make the motor react to an old gesture after the
+        # user has already released the pinch.
         cap = cv2.VideoCapture(self.camera_id)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
@@ -321,7 +372,9 @@ class JetsonHandTracker:
                 norm_x = pinch_result["norm_x"]
                 norm_y = pinch_result["norm_y"]
 
-                # Determine handedness: prefer MediaPipe label when present, otherwise use X-position heuristic.
+                # MediaPipe's handedness label is the primary signal. The
+                # fallback has no handedness model, so infer side from the
+                # pinch midpoint's position in the image instead.
                 raw_hand = pinch_result.get("hand", None)
                 hand_side = None
                 if raw_hand:
@@ -335,7 +388,8 @@ class JetsonHandTracker:
                 else:
                     reported = None
 
-                # If MediaPipe didn't provide a robust label, use X with hysteresis to infer side.
+                # Leave a dead band around the center of the image. Without it,
+                # a hand held near x=0.5 would alternate sides with noise.
                 if reported is None:
                     if norm_x < 0.5 - self._hand_margin:
                         reported = "left"
@@ -344,7 +398,9 @@ class JetsonHandTracker:
                     else:
                         reported = None
 
-                # Temporal smoothing: require N consecutive reports before switching.
+                # Require consecutive reports before switching sides. This
+                # prevents a single misclassified frame from reversing motor
+                # direction during an active gesture.
                 if reported is not None:
                     if self._hand_last is None:
                         # Initialize to first stable candidate quickly if repeated.
@@ -395,7 +451,7 @@ class JetsonHandTracker:
                         cv2.drawContours(frame, [pinch_result["contour"]], -1, (255, 255, 0), 2)
                     cv2.circle(frame, pinch_result["p0"], 8, (255, 0, 0), -1)
                     cv2.circle(frame, pinch_result["p1"], 8, (0, 255, 255), -1)
-                    # Header overlay: state, handedness, and pinch metric
+                    # Show state and measurements when preview mode is enabled.
                     hand_display = hand_side or "?"
                     cv2.putText(
                         frame,

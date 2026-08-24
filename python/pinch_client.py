@@ -5,6 +5,7 @@ from .jetson_pinch_service import JetsonHandTracker, PinchState
 
 
 def main():
+    # This client observes tracker events without commanding the motor.
     parser = argparse.ArgumentParser(description="Headless pinch event client for JetsonHandTracker.")
     parser.add_argument("--camera-id", type=int, default=0, help="Camera index.")
     args = parser.parse_args()
@@ -14,6 +15,7 @@ def main():
     print("Started headless pinch client. Press Ctrl+C to stop.")
 
     try:
+        # Hold events arrive every frame, so throttle their console output.
         last_state = None
         last_hold_time = 0.0
         while True:

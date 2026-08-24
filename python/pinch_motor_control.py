@@ -7,7 +7,15 @@ from .jetson_pinch_service import JetsonHandTracker, PinchState
 
 
 class PinchMotorController:
-    """Controls the motor from pinch events while keeping it idle otherwise."""
+    """Translate pinch lifecycle events into safe motor operations.
+
+    The tracker callback only records gesture state. A separate motor thread
+    performs the native calls because camera processing must not block on
+    EtherCAT I/O. While a pinch is active, the drive is enabled and one
+    continuous move is started; release stops that move. Positive counts are
+    used for the left-hand gesture and negative counts for the right-hand
+    gesture.
+    """
 
     def __init__(
         self,
@@ -41,6 +49,9 @@ class PinchMotorController:
         self._current_step_counts = int(self.step_counts)
 
     def start(self):
+        # Initialize the native EtherCAT layer first and leave the drive
+        # disabled until a real PINCH_DOWN event arrives. This prevents a
+        # camera startup or model-loading delay from causing motor motion.
         if motor.motor_init(self.interface.encode("utf-8")) <= 0:
             raise RuntimeError(f"Failed to initialize motor interface: {self.interface}")
 
@@ -62,6 +73,9 @@ class PinchMotorController:
         self.motor_thread.start()
 
     def stop(self):
+        # Stop the tracker and motor worker before unloading the shared C
+        # library. Both workers can still issue native calls, so closing the
+        # library first would create a race during shutdown.
         self.running = False
         if self.tracker:
             try:
@@ -87,10 +101,13 @@ class PinchMotorController:
             print(f"[PinchMotorController] Error closing motor library: {e}")
 
     def _on_pinch_event(self, state, x, y, hand):
-        # Map handedness to direction: left -> positive counts, right -> negative counts
+        # Convert the vision service's hand label into a signed encoder move.
+        # The callback deliberately does not call motor functions directly.
         if hand is None:
             hand = "left"
 
+        # DOWN starts the command, HOLD keeps the intent alive, and UP removes
+        # it. The motor loop turns that intent into idempotent start/stop calls.
         if state == PinchState.PINCH_DOWN:
             print(f"[PINCH] PINCH_DOWN -> continuous motion started (hand={hand})")
             self.pinch_active = True
@@ -103,6 +120,9 @@ class PinchMotorController:
             self.pinch_active = False
 
     def _motor_loop(self):
+        # Keep motor I/O off the camera callback thread. The loop also avoids
+        # repeatedly starting the same continuous command for every HOLD
+        # event, which is important because HOLD is emitted every frame.
         while self.running:
             if self.pinch_active:
                 if not self.motor_enabled:
@@ -120,6 +140,7 @@ class PinchMotorController:
             time.sleep(0.02)
 
     def _perform_move(self, counts, velocity):
+        # Guard the retained one-shot movement path against overlapping moves.
         if self.motor_move_in_progress:
             return
 
@@ -137,6 +158,7 @@ class PinchMotorController:
             self.should_disable_after_move = False
 
     def _request_disable(self):
+        # Defer disabling until an in-flight command has completed.
         if self.motor_move_in_progress:
             self.should_disable_after_move = True
         else:
@@ -148,6 +170,7 @@ class PinchMotorController:
 
 
 def main():
+    # Expose hardware, camera, and detection settings as command-line options.
     parser = argparse.ArgumentParser(description="Headless pinch-to-motor controller.")
     parser.add_argument("--camera-id", type=int, default=0, help="Camera index for video capture.")
     parser.add_argument("--interface", type=str, default="enP8p1s0", help="EtherCAT interface name.")

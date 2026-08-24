@@ -1,3 +1,6 @@
+/* Standalone interactive diagnostic for the EPOS4/SOEM connection. It
+ * duplicates the production command sequence so hardware can be tested
+ * without Python or the shared library. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -5,11 +8,14 @@
 
 #include "soem/soem.h"
 
+/* Standalone interactive EtherCAT test program state. */
 static uint8 IOmap[4096];
 static ecx_contextt ctx;
 
 int main(void)
 {
+    /* Keep drive values local because this executable talks to the drive
+     * directly and does not expose the motor.h API. */
     int32_t actualpos = 0;
     int32_t targetpos = 0;
 
@@ -51,6 +57,9 @@ int main(void)
     ecx_config_map_group(&ctx, IOmap, 0);
     ecx_configdc(&ctx);
 
+    /* Configure profile position mode (0x6060=1) and initial profile
+     * velocity (0x6081). SDO calls address object-dictionary entries on
+     * slave 1. */
     mode = 1;
 
     ecx_SDOwrite(
@@ -100,7 +109,7 @@ int main(void)
 
     printf("Initial Status = 0x%04X\n", statuswrd);
 
-    /* Shutdown */
+    /* CiA 402: request Shutdown before Switch On and Enable Operation. */
     ctrlwrd = 0x0006;
     ecx_SDOwrite(&ctx, 1, 0x6040, 0x00, FALSE,
                  csize, &ctrlwrd, EC_TIMEOUTRXM);
@@ -112,7 +121,7 @@ int main(void)
 
     printf("After 0x0006 -> Status = 0x%04X\n", statuswrd);
 
-    /* Switch On */
+    /* CiA 402: move from Ready to Switch On. */
     ctrlwrd = 0x0007;
     ecx_SDOwrite(&ctx, 1, 0x6040, 0x00, FALSE,
                  csize, &ctrlwrd, EC_TIMEOUTRXM);
@@ -124,7 +133,7 @@ int main(void)
 
     printf("After 0x0007 -> Status = 0x%04X\n", statuswrd);
 
-    /* Enable Operation */
+    /* CiA 402: permit motion commands. */
     ctrlwrd = 0x000F;
     ecx_SDOwrite(&ctx, 1, 0x6040, 0x00, FALSE,
                  csize, &ctrlwrd, EC_TIMEOUTRXM);
@@ -138,6 +147,8 @@ int main(void)
 
     printf("\nDrive Ready\n");
 
+    /* Accept commands until shutdown. The synchronous loop makes each
+     * displayed result correspond to the command just entered. */
     while (1)
     {
         printf("\nCommands:\n");
@@ -153,6 +164,7 @@ int main(void)
 
         if (cmd == 'p')
         {
+            /* 0x6064 is the actual position, returned in encoder counts. */
             psize = sizeof(actualpos);
 
             ecx_SDOread(
@@ -170,6 +182,7 @@ int main(void)
 
 	else if (cmd == 'v')
 	{
+        /* 0x6081 controls the speed used by profile-position moves. */
 		scanf("%u", &profile_velocity);
 		
 		ecx_SDOwrite(
@@ -210,6 +223,8 @@ int main(void)
 
         else if (cmd == 'm')
         {
+            /* Convert relative counts to an absolute target, then toggle the
+             * CiA 402 new-setpoint bit. */
             scanf("%d", &move_counts);
 
             psize = sizeof(actualpos);
@@ -291,6 +306,8 @@ int main(void)
 
         else if (cmd == 'q')
         {
+            /* Put the drive in shutdown before closing EtherCAT so it is not
+             * left enabled when communication ends. */
             ctrlwrd = 0x0006;
 
             ecx_SDOwrite(

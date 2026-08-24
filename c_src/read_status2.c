@@ -1,10 +1,15 @@
+/* SOEM discovery utility: open an interface, enumerate slaves, print basic
+ * identity/state information, and close the context without moving hardware. */
 #include <stdio.h>
 
 #include "soem/soem.h"
 
 
+/* SOEM stores master/session state in this context. */
 static ecx_contextt ctx;
 
+/* SOEM requires an IO map during configuration even though this utility only
+ * prints discovery information. */
 char IOmap[4096];
 
 
@@ -12,6 +17,7 @@ int main(int argc, char *argv[])
 
 {
 
+    /* Confirm that the compiler and SOEM headers are available. */
     if(argc < 2)
 
     {
@@ -37,12 +43,14 @@ int main(int argc, char *argv[])
     }
 
 
+    /* Configuration discovers slaves and populates ctx.slavelist. */
     ecx_config_init(&ctx);
 
 
     printf("\nFound %d slave(s)\n", ctx.slavecount);
 
 
+    /* SOEM slave indexes begin at 1; index 0 represents the master. */
     for(int i = 1; i <= ctx.slavecount; i++)
 
     {

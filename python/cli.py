@@ -1,7 +1,9 @@
 import ctypes
 import os
 
-# Determine project root and library path
+# Resolve the shared library relative to the repository before trying the
+# current working directory. The first two paths support the normal build
+# layouts; the final path preserves compatibility with older local builds.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 _LIB_CANDIDATES = [
     os.path.join(_PROJECT_ROOT, "lib", "libmotor.so"),
@@ -9,6 +11,8 @@ _LIB_CANDIDATES = [
     os.path.abspath("./libmotor.so"),
 ]
 
+# Select the first existing candidate so importing this module fails with a
+# useful message instead of producing an opaque ctypes loader error later.
 lib_path = None
 for p in _LIB_CANDIDATES:
     if os.path.exists(p):
@@ -18,9 +22,15 @@ for p in _LIB_CANDIDATES:
 if lib_path is None:
     raise FileNotFoundError("libmotor.so not found in expected locations")
 
+# Load the C API once. The resulting ``motor`` object is a ctypes proxy for
+# the functions exported by the C shared library; it is not a Python motor
+# implementation.
 motor = ctypes.CDLL(lib_path)
 
-# Declare function signatures for ctypes safety
+# Declare argument and return types before making calls. Without these
+# declarations ctypes may pass integers with the wrong width or interpret a
+# native return value incorrectly, which is especially dangerous for counts
+# and velocities.
 motor.motor_init.argtypes = [ctypes.c_char_p]
 motor.motor_init.restype = ctypes.c_int
 
@@ -42,7 +52,9 @@ motor.motor_get_position.restype = ctypes.c_int32
 motor.motor_close.argtypes = []
 motor.motor_close.restype = None
 
-# Continuous API
+# Continuous-motion functions are used by the pinch controller. The second
+# argument to ``motor_start_continuous`` is the native update interval, not a
+# Python sleep duration.
 motor.motor_start_continuous.argtypes = [ctypes.c_int32, ctypes.c_uint32]
 motor.motor_start_continuous.restype = ctypes.c_int
 
@@ -51,12 +63,12 @@ motor.motor_stop_continuous.restype = ctypes.c_int
 
 
 def main():
-    # Initialize EtherCAT interface
+    # Initialize EtherCAT before accepting commands.
     if motor.motor_init(b"enP8p1s0") <= 0:
         print("Initialization failed.")
         return
 
-    # Enable drive automatically on start
+    # Start in an enabled state for interactive use.
     motor.motor_enable()
 
     try:
@@ -69,6 +81,7 @@ def main():
             print("  d           Disable drive")
             print("  q           Quit")
 
+            # Split commands from their optional numeric arguments uniformly.
             user_input = input("> ").strip().split()
             if not user_input:
                 continue

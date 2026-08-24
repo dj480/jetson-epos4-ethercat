@@ -1,3 +1,10 @@
+/*
+ * Production C interface used by Python through ctypes.
+ *
+ * The EPOS4 exposes configuration and motion values as CiA 402 object
+ * dictionary entries. This file performs SDO transactions against slave 1;
+ * the Python layer supplies high-level requests such as "move relative".
+ */
 #include <stdint.h>
 
 #include <stdio.h>
@@ -14,12 +21,18 @@
 
  
 
+/* SOEM process-data map and context shared by the exported motor functions.
+ * IOmap is required by SOEM even though these commands use SDO transactions
+ * rather than directly reading mapped process data. */
 static uint8 IOmap[4096];
 
 static ecx_contextt ctx;
 
  
 
+/* Initialize EtherCAT and configure the drive's base settings. The caller
+ * must successfully run this before any other motor_* function. The
+ * interface name is an operating-system network-device name. */
 int motor_init(const char *iface)
 
 {
@@ -72,7 +85,8 @@ int motor_init(const char *iface)
 
  
 
-    // Set Profile Position Mode (0x6060 = 1)
+    /* 0x6060 is Modes of Operation. Value 1 selects Profile Position Mode,
+     * which accepts a target position and a setpoint toggle. */
 
     int8_t mode = 1;
 
@@ -90,7 +104,8 @@ int motor_init(const char *iface)
 
  
 
-    // Set default Profile Velocity (0x6081 = 5000)
+    /* 0x6081 is Profile Velocity, used by later profile-position moves unless
+     * the caller changes it with motor_set_velocity. */
 
     uint32_t profile_velocity = 5000;
 
@@ -106,6 +121,9 @@ int motor_init(const char *iface)
 
  
 
+/* Follow the CiA 402 state sequence to enable operation. The controlword
+ * (0x6040) requests state changes and the statusword (0x6041) reports them:
+ * Shutdown (0x0006), Switch On (0x0007), then Enable Operation (0x000F). */
 int motor_enable(void)
 
 {
@@ -186,6 +204,8 @@ int motor_enable(void)
 
 int motor_disable(void)
 
+    /* Shutdown removes operation enable while leaving the EtherCAT session
+     * available for another command or for an orderly close. */
 {
 
     uint16_t ctrlwrd = 0x0006;
@@ -202,6 +222,7 @@ int motor_disable(void)
 
 int motor_set_velocity(uint32_t speed)
 
+    /* Update object 0x6081 in the drive's configured native velocity units. */
 {
 
     ecx_SDOwrite(&ctx, 1, 0x6081, 0x00, FALSE, sizeof(speed), &speed, EC_TIMEOUTRXM);
@@ -216,6 +237,7 @@ int motor_set_velocity(uint32_t speed)
 
 int32_t motor_get_position(void)
 
+    /* Object 0x6064 is the signed actual position in encoder counts. */
 {
 
     int32_t actualpos = 0;
@@ -230,6 +252,10 @@ int32_t motor_get_position(void)
 
  
 
+/* Convert a relative request into an absolute target and trigger the move.
+ * EPOS4 profile-position mode accepts an absolute target at 0x607A, so a
+ * relative request first reads 0x6064 and writes current + requested counts.
+ * The 0x0010 new-setpoint bit is then pulsed to latch that target. */
 int motor_move_relative(int32_t move_counts)
 
 {
@@ -246,13 +272,13 @@ int motor_move_relative(int32_t move_counts)
 
  
 
-    // Write target position (0x607A)
+    /* 0x607A is the target position object and uses encoder counts. */
 
     ecx_SDOwrite(&ctx, 1, 0x607A, 0x00, FALSE, sizeof(targetpos), &targetpos, EC_TIMEOUTRXM);
 
  
 
-    // Setpoint toggle logic with exact delays
+    /* Toggle bit 4, "new set-point", so the drive accepts the target. */
 
     uint16_t ctrlwrd = 0x000F;
 
@@ -299,6 +325,8 @@ int motor_move_relative(int32_t move_counts)
 
  
 
+/* Release SOEM after all commands have stopped. The continuous worker must
+ * be stopped first so it cannot access ctx after it is closed. */
 void motor_close(void)
 
 {
@@ -307,8 +335,7 @@ void motor_close(void)
 
 }
 
-/* Continuous velocity thread implementation */
-/* Continuous velocity thread implementation */
+/* Continuous velocity thread implementation. */
 static pthread_t _vel_thread;
 static volatile int _vel_running = 0;
 static int32_t _vel_step = 0;
@@ -317,6 +344,8 @@ static uint32_t _vel_interval_ms = 5;
 static void *_vel_loop(void *arg)
 {
     (void)arg;
+    /* The drive is configured for profile position, so continuous motion is
+     * approximated with many small relative moves. */
     while (_vel_running) {
         motor_move_relative(_vel_step);
         if (_vel_interval_ms)
@@ -328,7 +357,7 @@ static void *_vel_loop(void *arg)
 int motor_start_continuous(int32_t step_counts, uint32_t interval_ms)
 {
     if (_vel_running)
-        return 0; /* already running */
+        return 0; /* Do not create duplicate worker threads. */
     _vel_step = step_counts;
     _vel_interval_ms = interval_ms ? interval_ms : 20;
     _vel_running = 1;
@@ -343,6 +372,8 @@ int motor_stop_continuous(void)
 {
     if (!_vel_running)
         return 0;
+    /* Clear the flag before joining so the worker exits after its current
+     * move instead of starting another one. */
     _vel_running = 0;
     pthread_join(_vel_thread, NULL);
     return 1;
