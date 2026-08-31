@@ -20,6 +20,7 @@ class PinchMotorController:
     def __init__(
         self,
         interface="enP8p1s0",
+        slave=1,
         camera_id=0,
         velocity=5000,
         step_counts=250,
@@ -29,6 +30,7 @@ class PinchMotorController:
         frame_height=120,
     ):
         self.interface = interface
+        self.slave = int(slave)
         self.camera_id = camera_id
         self.velocity = velocity
         self.step_counts = step_counts
@@ -55,7 +57,7 @@ class PinchMotorController:
         if motor.motor_init(self.interface.encode("utf-8")) <= 0:
             raise RuntimeError(f"Failed to initialize motor interface: {self.interface}")
 
-        motor.motor_disable()
+        motor.motor_disable(self.slave)
         self.motor_enabled = False
 
         self.tracker = JetsonHandTracker(
@@ -126,15 +128,15 @@ class PinchMotorController:
         while self.running:
             if self.pinch_active:
                 if not self.motor_enabled:
-                    motor.motor_enable()
+                    motor.motor_enable(self.slave)
                     self.motor_enabled = True
                 if not self._continuous_running:
-                    motor.motor_set_velocity(self.velocity)
-                    motor.motor_start_continuous(self._current_step_counts, 5)
+                    motor.motor_set_velocity(self.slave, self.velocity)
+                    motor.motor_start_continuous(self.slave, self._current_step_counts, 5)
                     self._continuous_running = True
             else:
                 if self._continuous_running:
-                    motor.motor_stop_continuous()
+                    motor.motor_stop_continuous(self.slave)
                     self._continuous_running = False
 
             time.sleep(0.02)
@@ -145,12 +147,12 @@ class PinchMotorController:
             return
 
         if not self.motor_enabled:
-            motor.motor_enable()
+            motor.motor_enable(self.slave)
             self.motor_enabled = True
 
-        motor.motor_set_velocity(velocity)
+        motor.motor_set_velocity(self.slave, velocity)
         self.motor_move_in_progress = True
-        motor.motor_move_relative(counts)
+        motor.motor_move_relative(self.slave, counts)
         self.motor_move_in_progress = False
 
         if self.should_disable_after_move:
@@ -165,7 +167,7 @@ class PinchMotorController:
             self._disable_motor()
 
     def _disable_motor(self):
-        motor.motor_disable()
+        motor.motor_disable(self.slave)
         self.motor_enabled = False
 
 
@@ -174,6 +176,12 @@ def main():
     parser = argparse.ArgumentParser(description="Headless pinch-to-motor controller.")
     parser.add_argument("--camera-id", type=int, default=0, help="Camera index for video capture.")
     parser.add_argument("--interface", type=str, default="enP8p1s0", help="EtherCAT interface name.")
+    parser.add_argument(
+        "--slave",
+        type=int,
+        default=1,
+        help="1-based EtherCAT chain position of the drive to control (see bin/scan_slaves).",
+    )
     parser.add_argument("--velocity", type=int, default=5000, help="Profile velocity for the motor.")
     parser.add_argument("--step-counts", type=int, default=250, help="Relative counts to move on pinch down.")
     parser.add_argument(
@@ -192,6 +200,7 @@ def main():
 
     controller = PinchMotorController(
         interface=args.interface,
+        slave=args.slave,
         camera_id=args.camera_id,
         velocity=args.velocity,
         step_counts=args.step_counts,

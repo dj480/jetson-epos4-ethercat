@@ -53,6 +53,13 @@ orchestration, runtime artifacts, and development/archive files.
 - `cli.py` is a compatibility entry point for that same CLI.
 - `pinch_client.py` starts camera-only pinch event reporting.
 - `pinch_motor_control.py` starts pinch-controlled motor motion.
+- `arm_motor_control.py` starts arm-following motor motion: the motor's
+  absolute position tracks the shoulder-elbow angle measured from the
+  camera. Requires `--down-position`/`--up-position`, the encoder counts
+  measured at two comfortable calibration points (jog there with
+  `main.py`/`cli.py` and note `motor_get_position()` first) - these need not
+  be the joint's physical hard limits, and don't need to be in any
+  particular numeric order.
 - `README.md` contains setup, machine configuration, and this repository map.
 
 These small root scripts forward to the implementations in `python/`, so a
@@ -78,6 +85,10 @@ This package contains the maintained Python implementations:
 - `pinch_motor_control.py` connects those events to motor direction and
    continuous movement on a worker thread.
 - `pinch_client.py` prints pinch events without commanding the motor.
+- `jetson_pose_service.py` captures camera frames, detects a pose with
+   MediaPipe, and emits the shoulder-elbow angle for one arm segment.
+- `arm_motor_control.py` maps that angle to an absolute motor target
+   position, clamped to a configured safe range, on a worker thread.
 
 Python is intentionally above the C layer: vision and user interaction stay
 in Python, while timing-sensitive EtherCAT operations remain in native code.
@@ -96,9 +107,10 @@ SOEM independently of the Python application.
 
 ### `models/`: machine-learning assets
 
-This folder stores the MediaPipe hand-landmarker model used by the primary
-pinch detector. The model is loaded only when MediaPipe Tasks is available;
-otherwise the service can use its OpenCV contour fallback.
+This folder stores the MediaPipe model assets: `hand_landmarker.task` for the
+pinch detector (loaded only when MediaPipe Tasks is available; otherwise the
+service can use its OpenCV contour fallback) and `pose_landmarker_lite.task`
+for the arm-following pose detector, which has no fallback.
 
 ### `build/`: build outputs and preserved artifacts
 

@@ -5,4 +5,6 @@ __all__ = [
     "pinch_motor_control",
     "pinch_client",
     "jetson_pinch_service",
+    "arm_motor_control",
+    "jetson_pose_service",
 ]
